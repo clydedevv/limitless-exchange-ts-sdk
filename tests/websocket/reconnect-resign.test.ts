@@ -79,6 +79,62 @@ describe('WebSocketClient handshake re-signing on reconnect', () => {
     expect(resigned['x-sdk-version']).toMatch(/^lmts-sdk-ts\//);
   });
 
+  it('re-subscribes once the namespace reconnects, not on the engine reconnect', async () => {
+    let socketConnectHandler: (() => void) | undefined;
+    let managerReconnectHandler: ((attempt: number) => void) | undefined;
+    const socketStub: any = {
+      connected: false,
+      once: vi.fn((event: string, handler: (...args: any[]) => void) => {
+        if (event === 'connect') connectHandler = handler as () => void;
+      }),
+      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+        if (event === 'connect') socketConnectHandler = handler as () => void;
+      }),
+      off: vi.fn(),
+      emit: vi.fn(),
+      disconnect: vi.fn(),
+      removeAllListeners: vi.fn(),
+      timeout: vi.fn(() => ({ emitWithAck: vi.fn() })),
+      io: {
+        on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+          if (event === 'reconnect_attempt') reconnectAttemptHandler = handler as (attempt: number) => void;
+          if (event === 'reconnect') managerReconnectHandler = handler as (attempt: number) => void;
+        }),
+        opts: {} as Record<string, unknown>,
+      },
+    };
+    ioMock.mockReturnValue(socketStub);
+
+    const { WebSocketClient } = await import('../../src/websocket/client');
+    const secret = Buffer.from('ws-secret').toString('base64');
+    const client = new WebSocketClient({
+      url: 'wss://ws.limitless.exchange',
+      hmacCredentials: { tokenId: 'token-1', secret },
+      autoReconnect: true,
+    });
+    const connectPromise = client.connect();
+    socketStub.connected = true;
+    socketConnectHandler?.();
+    connectHandler?.();
+    await connectPromise;
+
+    await client.subscribe('subscribe_order_events');
+    expect(socketStub.emit).toHaveBeenCalledWith('subscribe_order_events', {});
+    socketStub.emit.mockClear();
+
+    // Connection drops; the engine comes back first, the namespace after.
+    socketStub.connected = false;
+    reconnectAttemptHandler?.(1);
+    managerReconnectHandler?.(1);
+    await Promise.resolve();
+    expect(socketStub.emit).not.toHaveBeenCalled();
+
+    socketStub.connected = true;
+    socketConnectHandler?.();
+    await Promise.resolve();
+    expect(socketStub.emit).toHaveBeenCalledWith('subscribe_order_events', {});
+  });
+
   it('leaves the options untouched when no credentials are configured', async () => {
     const socketStub: any = {
       connected: false,

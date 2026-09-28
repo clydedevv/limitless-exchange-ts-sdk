@@ -516,9 +516,17 @@ export class WebSocketClient {
 
     // Connection events
     this.socket.on('connect', () => {
+      // Held subscriptions mean this is an automatic reconnect: the first
+      // connect completes before anything can subscribe.
+      const isReconnect = this.subscriptions.size > 0;
       this.state = WebSocketState.CONNECTED;
       this.reconnectAttempts = 0;
-      this.logger.info('WebSocket connected');
+      this.logger.info(isReconnect ? 'WebSocket reconnected' : 'WebSocket connected');
+      // Re-subscribe here, once the /markets namespace is connected again. The
+      // Manager's 'reconnect' event fires earlier, when only the engine is open,
+      // so subscribing from there throws "not connected" for every channel and
+      // the socket comes back bound to nothing.
+      if (isReconnect) void this.resubscribeAll();
     });
 
     this.socket.on('disconnect', (reason) => {
@@ -547,9 +555,8 @@ export class WebSocketClient {
     });
 
     this.socket.io.on('reconnect', (attempt) => {
-      this.state = WebSocketState.CONNECTED;
+      // Engine-level only. The namespace 'connect' handler re-subscribes.
       this.logger.info('Reconnected', { attempts: attempt });
-      this.resubscribeAll();
     });
 
     this.socket.io.on('reconnect_error', (error) => {
